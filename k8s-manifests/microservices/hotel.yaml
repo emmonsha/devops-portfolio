@@ -1,0 +1,63 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hotel-deployment
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: hotel
+  template:
+    metadata:
+      labels:
+        app: hotel
+    spec:
+      containers:
+      - name: hotel
+        image: pavelignatiev/emmonsha_devops10_hotel-service:06.11.25
+        ports:
+        - containerPort: 8082  # server.port=8082
+        env:
+        # Database configuration - using the exact variable names from application.properties
+        - name: SPRING_JPA_HIBERNATE_DIALECT
+          value: "org.hibernate.dialect.PostgreSQL10Dialect"
+        - name: SPRING_JPA_HIBERNATE_DDL_AUTO
+          value: "create"
+        - name: POSTGRES_HOST
+          valueFrom:
+            configMapKeyRef:
+              name: app-config
+              key: POSTGRES_HOST
+        - name: POSTGRES_PORT
+          valueFrom:
+            configMapKeyRef:
+              name: app-config
+              key: POSTGRES_PORT
+        - name: POSTGRES_DB
+          valueFrom:
+            configMapKeyRef:
+              name: app-config
+              key: POSTGRES_DB
+        - name: POSTGRES_USER
+          valueFrom:
+            configMapKeyRef:
+              name: app-config
+              key: POSTGRES_USER
+        - name: POSTGRES_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: app-secrets
+              key: db-password
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: hotel-service
+spec:
+  selector:
+    app: hotel
+  ports:
+    - protocol: TCP
+      port: 8082  # Port from application.properties
+      targetPort: 8082
+  type: ClusterIP

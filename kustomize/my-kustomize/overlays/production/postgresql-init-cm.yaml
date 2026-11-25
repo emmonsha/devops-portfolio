@@ -1,0 +1,20 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: init-sql
+data:
+  init.sql: |-
+    CREATE DATABASE booking_db;
+    CREATE DATABASE hotel_db;
+    CREATE DATABASE session_db;
+    CREATE DATABASE payment_db;
+    CREATE DATABASE loyalty_db;
+    CREATE DATABASE report_db;
+
+    -- Grant all privileges to postgres user
+    GRANT ALL PRIVILEGES ON DATABASE booking_db TO postgres;
+    GRANT ALL PRIVILEGES ON DATABASE hotel_db TO postgres;
+    GRANT ALL PRIVILEGES ON DATABASE session_db TO postgres;
+    GRANT ALL PRIVILEGES ON DATABASE payment_db TO postgres;
+    GRANT ALL PRIVILEGES ON DATABASE loyalty_db TO postgres;
+    GRANT ALL PRIVILEGES ON DATABASE report_db TO postgres;

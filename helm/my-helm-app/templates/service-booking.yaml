@@ -1,0 +1,18 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "my-helm-app.fullname" . }}-booking-service
+  labels:
+    {{- include "my-helm-app.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.booking.service.type | default "ClusterIP" }}
+  ports:
+  - port: {{ .Values.booking.service.port }}
+    targetPort: {{ .Values.booking.service.port }}
+    {{- if eq .Values.booking.service.type "NodePort" }}
+    nodePort: {{ .Values.booking.service.nodePort }}
+    {{- end }}
+    protocol: TCP
+  selector:
+    {{- include "my-helm-app.selectorLabels" . | nindent 4 }}
+    app: booking

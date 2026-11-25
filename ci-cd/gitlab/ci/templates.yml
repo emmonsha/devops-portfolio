@@ -1,0 +1,214 @@
+# =============================================================================
+# TEMPLATES.YML - Base templates и rules
+# =============================================================================
+
+# ============================================
+# DEFAULT SETTINGS
+# ============================================
+
+default:
+#  tags:
+#    - kubernetes
+#    - test
+#    - production
+
+
+# ============================================
+# RULES
+# ============================================
+
+.feature-branch-rules:
+  rules:
+    - if: '$CI_COMMIT_BRANCH =~ /^feature_.*/'
+      when: always
+    - when: never
+
+.tag-rules:
+  rules:
+    - if: '$CI_COMMIT_TAG'
+      when: manual
+    - when: never
+
+.main-branch-rules:
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      when: always
+    - when: never
+
+.develop-branch-rules:
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "develop"'
+      when: always
+    - when: never
+
+# ============================================
+# DOCKER BUILD TEMPLATE
+# ============================================
+
+.docker-build-template:
+  image: docker:24-dind
+  services:
+    - docker:24-dind
+  before_script:
+    - echo "$DOCKER_PASSWORD" | docker login -u "$DOCKER_USERNAME" --password-stdin $DOCKER_REGISTRY
+  after_script:
+    - docker logout $DOCKER_REGISTRY
+  retry:
+    max: 2
+    when:
+      - runner_system_failure
+      - stuck_or_timeout_failure
+
+# ============================================
+# KUBERNETES TEMPLATE
+# ============================================
+
+.kubernetes-template:
+  image: alpine/helm:3.13.3
+  before_script:
+    - apk add --no-cache curl bash gettext
+    # Определяем архитектуру динамически — runner может быть amd64 или arm64
+    - ARCH=$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')
+    - echo "Runner architecture - ${ARCH}"
+    - curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/${ARCH}/kubectl"
+    - chmod +x kubectl && mv kubectl /usr/local/bin/
+    - kubectl version --client
+
+# ============================================
+# POSTGRES SERVICE TEMPLATE
+# ============================================
+
+.postgres-service:
+  services:
+    - name: postgres:16
+      alias: postgres
+  variables:
+    POSTGRES_HOST: postgres
+    POSTGRES_PORT: "5432"
+
+# ============================================
+# RABBITMQ SERVICE TEMPLATE
+# ============================================
+
+.rabbitmq-service:
+  services:
+    - name: rabbitmq:3-management-alpine
+      alias: rabbitmq
+  variables:
+    SPRING_RABBITMQ_HOST: rabbitmq
+    SPRING_RABBITMQ_PORT: "5672"
+
+# ============================================
+# WAIT FOR POSTGRES TEMPLATE
+# ============================================
+
+.wait-for-postgres:
+  before_script:
+    - apk add --no-cache postgresql-client
+    - |
+      echo "Waiting for PostgreSQL..."
+      for i in $(seq 1 30); do
+        if pg_isready -h "$POSTGRES_HOST" -p "$POSTGRES_PORT" -U "$POSTGRES_USER"; then
+          echo "PostgreSQL is ready!"
+          break
+        fi
+        echo "Attempt $i/30..."
+        sleep 2
+      done
+    - |
+      echo "Creating database if not exists..."
+      PGPASSWORD=$POSTGRES_PASSWORD psql -h "$POSTGRES_HOST" -U "$POSTGRES_USER" -d postgres \
+        -c "SELECT 'CREATE DATABASE $POSTGRES_DB' WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = '$POSTGRES_DB')\gexec"
+    - |
+      echo "Verifying database..."
+      PGPASSWORD=$POSTGRES_PASSWORD psql -h "$POSTGRES_HOST" -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c '\conninfo'
+
+# ============================================
+# WAIT FOR RABBITMQ TEMPLATE
+# ============================================
+
+.wait-for-rabbitmq:
+  before_script:
+    - apk add --no-cache curl
+    - |
+      echo "Waiting for RabbitMQ..."
+      for i in $(seq 1 60); do
+        if curl -sf -u guest:${RABBITMQ_PASSWORD} http://rabbitmq:15672/api/whoami >/dev/null 2>&1; then
+          echo "RabbitMQ is ready!"
+          break
+        fi
+        echo "Attempt $i/60..."
+        sleep 2
+      done
+
+# ============================================
+# NODE.JS TEMPLATE
+# ============================================
+
+.nodejs-template:
+  image: node:18-alpine
+  cache:
+    key:
+      files:
+        - "**/package-lock.json"
+      prefix: ${CI_COMMIT_REF_SLUG}
+    paths:
+      - node_modules/
+      - .npm/
+    policy: pull-push
+
+# ============================================
+# MAVEN/JAVA TEMPLATE
+# ============================================
+
+.java-template:
+  image: maven:3.9-eclipse-temurin-17
+  cache:
+    key:
+      files:
+        - "**/pom.xml"
+      prefix: ${CI_COMMIT_REF_SLUG}
+    paths:
+      - .m2/repository/
+    policy: pull-push
+  variables:
+    MAVEN_OPTS: >-
+      -Dmaven.repo.local=$CI_PROJECT_DIR/.m2/repository
+      -Dorg.slf4j.simpleLogger.showDateTime=true
+
+# ============================================
+# ARTIFACTS TEMPLATES
+# ============================================
+
+.build-artifacts:
+  artifacts:
+    expire_in: 1 hour
+    paths:
+      - ${SERVICES_DIR}/*/target/*.jar
+      - ${SERVICES_DIR}/*/dist/
+      - ${SERVICES_DIR}/*/build/
+
+.test-artifacts:
+  artifacts:
+    when: always
+    expire_in: ${TEST_RESULTS_EXPIRE_TIME}
+    reports:
+      junit:
+        - "**/*test-results.xml"
+        - "**/*junit.xml"
+    paths:
+      - coverage/
+      - test-results/
+
+# ============================================
+# CLEANUP TEMPLATE
+# ============================================
+
+.cleanup-namespace:
+  after_script:
+    - |
+      if [ -n "$CLEANUP_NAMESPACE" ]; then
+        echo "=== Cleaning up namespace - $CLEANUP_NAMESPACE ==="
+        kubectl delete namespace $CLEANUP_NAMESPACE --ignore-not-found=true
+        echo "Namespace deleted"
+      fi

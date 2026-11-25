@@ -1,0 +1,148 @@
+# =============================================================================
+# PREPARE.YML - Prepare Stage
+# Переменные загружаются из Kubernetes Secret монтированного в runner
+# Секреты загружаются из Kubernetes Secret (см. ci-cd/gitlab/runners/)
+# =============================================================================
+
+prepare:load-variables:
+  stage: prepare
+  rules:
+    - if: '$CI_COMMIT_BRANCH =~ /^feature_.*/'
+      when: always
+    - if: '$CI_COMMIT_BRANCH == "develop"'
+      when: always
+    - if: '$CI_COMMIT_TAG'
+      when: always
+    - when: never
+  image: alpine:latest
+  script:
+    - echo "=== Loading secrets from Kubernetes Secret ==="
+    - |
+      SECRET_PATH="/etc/secrets/app-variables"
+
+      if [ ! -d "$SECRET_PATH" ]; then
+        echo "ERROR - Secret not mounted at $SECRET_PATH"
+        echo "Ensure the secret is configured in runner config.toml"
+        exit 1
+      fi
+
+      export DOCKER_USERNAME=$(cat "$SECRET_PATH/DOCKER_USERNAME" 2>/dev/null || echo "")
+      export DOCKER_PASSWORD=$(cat "$SECRET_PATH/DOCKER_PASSWORD" 2>/dev/null || echo "")
+      export DOCKER_REPOSITORY=$(cat "$SECRET_PATH/DOCKER_REPOSITORY" 2>/dev/null || echo "")
+      export DOCKER_REGISTRY_URL=$(cat "$SECRET_PATH/DOCKER_REGISTRY_URL" 2>/dev/null || echo "")
+      export POSTGRES_PASSWORD=$(cat "$SECRET_PATH/POSTGRES_PASSWORD" 2>/dev/null || echo "")
+      export RABBITMQ_PASSWORD=$(cat "$SECRET_PATH/RABBITMQ_PASSWORD" 2>/dev/null || echo "")
+      export PRIVATE_KEY=$(cat "$SECRET_PATH/PRIVATE_KEY" 2>/dev/null || echo "")
+      export PUBLIC_KEY=$(cat "$SECRET_PATH/PUBLIC_KEY" 2>/dev/null || echo "")
+
+      if [ -z "$DOCKER_USERNAME" ] || [ -z "$DOCKER_PASSWORD" ]; then
+        echo "ERROR - DOCKER_USERNAME or DOCKER_PASSWORD is empty!"
+        exit 1
+      fi
+
+      echo "DOCKER_USERNAME=$DOCKER_USERNAME" > build.env
+      echo "DOCKER_PASSWORD=$DOCKER_PASSWORD" >> build.env
+      echo "DOCKER_REPOSITORY=$DOCKER_REPOSITORY" >> build.env
+      echo "DOCKER_REGISTRY_URL=$DOCKER_REGISTRY_URL" >> build.env
+      echo "POSTGRES_PASSWORD=$POSTGRES_PASSWORD" >> build.env
+      echo "RABBITMQ_PASSWORD=$RABBITMQ_PASSWORD" >> build.env
+      echo "PRIVATE_KEY=$PRIVATE_KEY" >> build.env
+      echo "PUBLIC_KEY=$PUBLIC_KEY" >> build.env
+
+      echo "OK - Variables loaded from Kubernetes Secret"
+
+    - echo "=== Copying Postman collection ==="
+    - |
+      if [ -f "src/application_tests.postman_collection.json" ]; then
+        cp src/application_tests.postman_collection.json .
+        echo "OK - Postman collection found in src/"
+      else
+        echo "ERROR - Postman collection not found at src/application_tests.postman_collection.json"
+        exit 1
+      fi
+
+    - |
+      if [ -f "src/kubeconfig.b64" ]; then
+        cp src/kubeconfig.b64 .
+        echo "OK - kubeconfig.b64 found"
+      else
+        echo "INFO - No kubeconfig.b64 file"
+      fi
+
+    - echo "=== Prepare stage completed ==="
+
+  artifacts:
+    reports:
+      dotenv: build.env
+    paths:
+      - build.env
+      - application_tests.postman_collection.json
+      - kubeconfig.b64
+    expire_in: 1 hour
+
+# ============================================
+# VALIDATE ENVIRONMENT
+# ============================================
+
+prepare:validate:
+  stage: prepare
+  rules:
+    - if: '$CI_COMMIT_BRANCH =~ /^feature_.*/'
+      when: on_success
+    - if: '$CI_COMMIT_BRANCH == "develop"'
+      when: on_success
+    - if: '$CI_COMMIT_TAG'
+      when: on_success
+    - when: never
+  image: alpine:latest
+  needs:
+    - job: prepare:load-variables
+      artifacts: true
+  script:
+    - echo "=== Validating environment ==="
+    - |
+      # Переменные из dotenv артефакта доступны как env-переменные окружения
+      MISSING_VARS=""
+      for VAR in DOCKER_USERNAME DOCKER_PASSWORD DOCKER_REGISTRY_URL DOCKER_REPOSITORY; do
+        VAL=$(printenv "$VAR" || echo "")
+        if [ -z "$VAL" ]; then
+          echo "MISSING - $VAR is not set"
+          MISSING_VARS="$MISSING_VARS $VAR"
+        else
+          echo "OK - $VAR is set"
+        fi
+      done
+
+      if [ -n "$MISSING_VARS" ]; then
+        echo "ERROR - Missing required variables:$MISSING_VARS"
+        exit 1
+      fi
+
+    - |
+      for dir in ${SERVICES_DIR} ${HELM_DIR}; do
+        if [ -d "$dir" ]; then
+          echo "OK - Directory exists: $dir"
+        else
+          echo "ERROR - Required directory not found: $dir"
+          exit 1
+        fi
+      done
+
+    - |
+      for service in gateway-service session-service booking-service hotel-service loyalty-service payment-service report-service; do
+        if [ -d "${SERVICES_DIR}/${service}" ]; then
+          echo "OK - $service"
+        else
+          echo "MISSING - $service directory not found"
+        fi
+      done
+
+    - |
+      if [ -f "${HELM_CHART_PATH}/Chart.yaml" ]; then
+        echo "OK - Helm chart found"
+      else
+        echo "WARNING - Helm Chart.yaml not found at ${HELM_CHART_PATH}"
+      fi
+
+    - echo "=== Validation completed ==="
+  allow_failure: true

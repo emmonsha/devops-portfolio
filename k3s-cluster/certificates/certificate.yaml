@@ -1,0 +1,14 @@
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: wildcard-certificate
+  namespace: default
+spec:
+  secretName: wildcard-tls-certificate
+  issuerRef:
+    name: letsencrypt-prod    # ← ссылается на ClusterIssuer
+    kind: ClusterIssuer
+  commonName: '*.emmonsha.ru'
+  dnsNames:
+  - '*.emmonsha.ru'
+  - 'emmonsha.ru'

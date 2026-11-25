@@ -1,0 +1,18 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "my-helm-app.fullname" . }}-loyalty-service
+  labels:
+    {{- include "my-helm-app.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.loyalty.service.type | default "ClusterIP" }}
+  ports:
+  - port: {{ .Values.loyalty.service.port }}
+    targetPort: {{ .Values.loyalty.service.port }}
+    {{- if eq .Values.loyalty.service.type "NodePort" }}
+    nodePort: {{ .Values.loyalty.service.nodePort }}
+    {{- end }}
+    protocol: TCP
+  selector:
+    {{- include "my-helm-app.selectorLabels" . | nindent 4 }}
+    app: loyalty

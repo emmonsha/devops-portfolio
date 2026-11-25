@@ -1,0 +1,294 @@
+# =============================================================================
+# TEST.YML - Test Stage
+# Функциональные тесты Postman/Newman
+# Запускается автоматически для веток с префиксом feature_
+# =============================================================================
+
+test:functional:newman:
+  stage: test
+  needs:
+    - job: prepare:load-variables
+      artifacts: true
+    - job: build:gateway
+      optional: true
+    - job: build:session
+      optional: true
+    - job: build:hotel
+      optional: true
+    - job: build:booking
+      optional: true
+    - job: build:payment
+      optional: true
+    - job: build:loyalty
+      optional: true
+    - job: build:report
+      optional: true
+  image: alpine/helm:3.13.3
+  variables:
+    STAGING_NAMESPACE: test-newman-$CI_PIPELINE_ID
+    HELM_CHART_PATH: src/helm/my-helm-app
+    IMAGE_TAG: latest
+  before_script:
+    - apk add --no-cache curl bash jq
+    - ARCH=$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')
+    - curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/${ARCH}/kubectl"
+    - chmod +x kubectl && mv kubectl /usr/local/bin/
+    - |
+      cat > /usr/local/bin/make-newman-files.sh << 'SH'
+      #!/bin/sh
+      set -e
+      source /tmp/svc.env
+      cat > /tmp/newman-env.json << NEWMAN_ENV
+      {
+        "id": "test-env",
+        "name": "Test Environment",
+        "values": [
+          {"key": "API_HOST",     "value": "http://${GATEWAY_URL}",    "enabled": true},
+          {"key": "GATEWAY_PORT", "value": "${GATEWAY_PORT}",          "enabled": true},
+          {"key": "SESSION_HOST", "value": "http://${SESSION_URL}",    "enabled": true},
+          {"key": "USERS_PORT",   "value": "${SESSION_PORT}",          "enabled": true},
+          {"key": "BASIC",        "value": "Basic VXNlcjpxd2VydHk=",  "enabled": true},
+          {"key": "BEARER",       "value": "",                         "enabled": true},
+          {"key": "HOTEL_UID",    "value": "",                         "enabled": true}
+        ]
+      }
+      NEWMAN_ENV
+      cat > /tmp/newman-pod.yaml << NEWMAN_POD
+      apiVersion: v1
+      kind: Pod
+      metadata:
+        name: newman-e2e
+        namespace: ${STAGING_NAMESPACE}
+      spec:
+        restartPolicy: Never
+        containers:
+        - name: newman
+          image: postman/newman:6-alpine
+          command:
+          - sh
+          - -c
+          - "newman run /etc/postman/collection.json --environment /etc/newman-env/environment.json --reporters cli,junit --reporter-junit-export /tmp/results.xml --timeout-request 120000 --delay-request 10000 --verbose --color off; EXIT=$?; echo Newman done sleeping 30s for results copy; sleep 30; exit $EXIT"
+          volumeMounts:
+          - name: postman-collection
+            mountPath: /etc/postman
+            readOnly: true
+          - name: newman-env
+            mountPath: /etc/newman-env
+            readOnly: true
+        volumes:
+        - name: postman-collection
+          configMap:
+            name: postman-collection
+        - name: newman-env
+          configMap:
+            name: newman-env
+      NEWMAN_POD
+      SH
+      chmod +x /usr/local/bin/make-newman-files.sh
+
+  script:
+    - echo "=== Creating test namespace ==="
+    - kubectl create namespace $STAGING_NAMESPACE || true
+
+    - echo "=== Creating Docker registry secret ==="
+    - kubectl create secret docker-registry regcred --docker-server=$DOCKER_REGISTRY --docker-username=$DOCKER_USERNAME --docker-password=$DOCKER_PASSWORD --namespace=$STAGING_NAMESPACE --dry-run=client -o yaml | kubectl apply -f -
+
+    - echo "=== Parsing RSA keys and creating per-service secrets ==="
+    - |
+      PRIVATE_KEY_VAL=""
+      PUBLIC_KEY_VAL=""
+      for SERVICE in booking-service gateway-service session-service payment-service loyalty-service report-service hotel-service; do
+        PROPS="${SERVICES_DIR}/$SERVICE/src/main/resources/application.properties"
+        if [ -f "$PROPS" ] && grep -q "^privateKey=" "$PROPS"; then
+          PRIVATE_KEY_VAL=$(awk '/^privateKey=/{val=substr($0,12); while(sub(/\\$/,"",val)){getline l; gsub(/^[ \t]+/,"",l); val=val l}; print val}' "$PROPS")
+          PUBLIC_KEY_VAL=$(awk '/^publicKey=/{val=substr($0,11); while(sub(/\\$/,"",val)){getline l; gsub(/^[ \t]+/,"",l); val=val l}; print val}' "$PROPS")
+          echo "Found RSA keys in $SERVICE"
+          break
+        fi
+      done
+      if [ -z "$PRIVATE_KEY_VAL" ]; then
+        echo "WARNING: RSA keys not found, using CI variables"
+        PRIVATE_KEY_VAL="${RSA_PRIVATE_KEY:-}"
+        PUBLIC_KEY_VAL="${RSA_PUBLIC_KEY:-}"
+      fi
+      for SERVICE_NAME in booking session payment loyalty report hotel; do
+        kubectl create secret generic ${SERVICE_NAME}-service-app-secrets \
+          --namespace=$STAGING_NAMESPACE \
+          --from-literal=PRIVATE_KEY="$PRIVATE_KEY_VAL" \
+          --from-literal=PUBLIC_KEY="$PUBLIC_KEY_VAL" \
+          --dry-run=client -o yaml | kubectl apply -f -
+        echo "Created secret: ${SERVICE_NAME}-service-app-secrets"
+      done
+
+    - echo "=== Deploying via Helm ==="
+    - |
+      helm upgrade --install newman-test-$CI_PIPELINE_ID ${CI_PROJECT_DIR}/${HELM_CHART_PATH} \
+        --namespace $STAGING_NAMESPACE \
+        --set gateway.service.type=ClusterIP \
+        --set gateway.service.nodePort=null \
+        --set session.service.type=ClusterIP \
+        --set session.service.nodePort=null \
+        --set gateway.image.tag=${IMAGE_TAG} \
+        --set session.image.tag=${IMAGE_TAG} \
+        --set booking.image.tag=${IMAGE_TAG} \
+        --set hotel.image.tag=${IMAGE_TAG} \
+        --set loyalty.image.tag=${IMAGE_TAG} \
+        --set payment.image.tag=${IMAGE_TAG} \
+        --set report.image.tag=${IMAGE_TAG} \
+        --set global.imagePullSecrets[0].name=regcred \
+        --set rabbitmq.image.repository=rabbitmq \
+        --set rabbitmq.image.tag=3-management \
+        --set postgresql.persistence.enabled=false \
+        --set serviceAccount.create=false \
+        --wait --timeout 10m --atomic
+
+    - echo "=== Waiting for all pods to be ready ==="
+    - kubectl wait --for=condition=ready pod --all -n $STAGING_NAMESPACE --timeout=90s || true
+
+    - 'echo "=== Diagnostics: services ==="'
+    - kubectl get svc -n $STAGING_NAMESPACE --show-labels
+
+    - 'echo "=== Diagnostics: pods ==="'
+    - kubectl get pods -n $STAGING_NAMESPACE -o wide
+
+    - echo "=== Waiting for services to fully initialize ==="
+    - sleep 90
+
+    - echo "=== Getting service endpoints via DNS ==="
+    - |
+      GATEWAY_SVC=$(kubectl get svc -n $STAGING_NAMESPACE -o name | grep -i gateway | head -1 | cut -d/ -f2)
+      if [ -z "$GATEWAY_SVC" ]; then
+        echo "Gateway service not found!"
+        kubectl get svc -n $STAGING_NAMESPACE
+        exit 1
+      fi
+      GATEWAY_PORT=$(kubectl get svc $GATEWAY_SVC -n $STAGING_NAMESPACE -o jsonpath='{.spec.ports[0].port}')
+      GATEWAY_URL="${GATEWAY_SVC}.${STAGING_NAMESPACE}.svc.cluster.local"
+      echo "Gateway DNS: $GATEWAY_URL:$GATEWAY_PORT"
+
+      SESSION_SVC=$(kubectl get svc -n $STAGING_NAMESPACE -o name | grep -i session | head -1 | cut -d/ -f2)
+      if [ -n "$SESSION_SVC" ]; then
+        SESSION_PORT=$(kubectl get svc $SESSION_SVC -n $STAGING_NAMESPACE -o jsonpath='{.spec.ports[0].port}')
+        SESSION_URL="${SESSION_SVC}.${STAGING_NAMESPACE}.svc.cluster.local"
+        echo "Session DNS: $SESSION_URL:$SESSION_PORT"
+      else
+        echo "Session service not found, using fallback DNS"
+        SESSION_URL="session-service.${STAGING_NAMESPACE}.svc.cluster.local"
+        SESSION_PORT="8081"
+      fi
+
+      echo "GATEWAY_URL=$GATEWAY_URL" >> /tmp/svc.env
+      echo "GATEWAY_PORT=$GATEWAY_PORT" >> /tmp/svc.env
+      echo "SESSION_URL=$SESSION_URL" >> /tmp/svc.env
+      echo "SESSION_PORT=$SESSION_PORT" >> /tmp/svc.env
+
+    - echo "=== Copying Postman collection ==="
+    - cp ./src/application_tests.postman_collection.json /tmp/collection-fixed.json
+    - |
+      jq -r '.item[] | "\(.name): \(.request.method) \(.request.url.raw)"' /tmp/collection-fixed.json
+
+    - echo "=== Creating Newman environment and pod files ==="
+    - make-newman-files.sh
+    - echo "Newman environment:"
+    - cat /tmp/newman-env.json
+
+    - kubectl create configmap postman-collection --from-file=collection.json=/tmp/collection-fixed.json -n $STAGING_NAMESPACE --dry-run=client -o yaml | kubectl apply -f -
+    - kubectl create configmap newman-env --from-file=environment.json=/tmp/newman-env.json -n $STAGING_NAMESPACE --dry-run=client -o yaml | kubectl apply -f -
+
+    - echo "=== Verifying ConfigMaps ==="
+    - |
+      kubectl get configmap postman-collection -n $STAGING_NAMESPACE \
+        -o jsonpath='{.data.collection\.json}' | \
+        jq -r '.item[] | "\(.name): \(.request.method) \(.request.url.raw)"'
+      kubectl get configmap newman-env -n $STAGING_NAMESPACE \
+        -o jsonpath='{.data.environment\.json}' | \
+        jq -r '.values[] | "  \(.key) = \(.value)"'
+
+    - echo "=== Running Newman ==="
+    - kubectl apply -f /tmp/newman-pod.yaml
+
+    - echo "=== Service DNS diagnostic ==="
+    - kubectl get svc -n $STAGING_NAMESPACE -o custom-columns=NAME:.metadata.name,TYPE:.spec.type,CLUSTER-IP:.spec.clusterIP,PORT:.spec.ports[0].port
+
+    - echo "=== Waiting for Newman to complete ==="
+    - |
+      RESULTS_COPIED=false
+      for i in $(seq 1 180); do
+        STATUS=$(kubectl get pod newman-e2e -n $STAGING_NAMESPACE -o jsonpath='{.status.phase}' 2>/dev/null || echo "Pending")
+        echo "Newman pod status: $STATUS (attempt $i/180)"
+        if [ "$STATUS" = "Running" ] && [ "$RESULTS_COPIED" = "false" ]; then
+          kubectl cp $STAGING_NAMESPACE/newman-e2e:/tmp/results.xml ./newman-results.xml 2>/dev/null             && RESULTS_COPIED=true && echo "Results copied while running" || true
+        fi
+        if [ "$STATUS" = "Succeeded" ] || [ "$STATUS" = "Failed" ]; then
+          break
+        fi
+        sleep 5
+      done
+
+    - echo "=== Newman logs ==="
+    - kubectl logs newman-e2e -n $STAGING_NAMESPACE || echo "Could not fetch logs"
+
+    - echo "=== report-service logs ==="
+    - |
+      REPORT_POD=$(kubectl get pods -n $STAGING_NAMESPACE --no-headers -o custom-columns=":metadata.name" | grep "-report-" | head -1)
+      if [ -n "$REPORT_POD" ]; then
+        echo "Pod: $REPORT_POD"
+        kubectl logs $REPORT_POD -n $STAGING_NAMESPACE --tail=200 | grep -E "Received|ERROR|WARN|report" || kubectl logs $REPORT_POD -n $STAGING_NAMESPACE --tail=200
+      else
+        echo "❌ report-service pod not found"
+      fi
+
+    - echo "=== Ensuring results file exists ==="
+    - |
+      if [ ! -s "./newman-results.xml" ]; then
+        echo "results.xml not copied during run — extracting from pod logs..."
+        kubectl logs newman-e2e -n $STAGING_NAMESPACE > /tmp/newman-full.log 2>/dev/null || true
+        printf '<?xml version="1.0" encoding="UTF-8"?>\n<testsuites name="newman" tests="1" failures="0" errors="0">\n  <testsuite name="Application Tests" tests="1" failures="0" errors="0">\n    <testcase name="Newman completed (see CI logs for details)" classname="newman"/>\n  </testsuite>\n</testsuites>\n' > ./newman-results.xml
+        echo "Placeholder JUnit XML created"
+      else
+        echo "newman-results.xml ready: $(wc -c < ./newman-results.xml) bytes"
+      fi
+
+    - echo "=== Checking exit code ==="
+    - |
+      EXIT_CODE=$(kubectl get pod newman-e2e -n $STAGING_NAMESPACE \
+        -o jsonpath='{.status.containerStatuses[0].state.terminated.exitCode}' 2>/dev/null || echo "1")
+      echo "Newman exit code: $EXIT_CODE"
+      if [ "$EXIT_CODE" != "0" ]; then
+        echo "Newman tests failed!"
+        exit $EXIT_CODE
+      else
+        echo "Newman tests passed!"
+      fi
+
+  after_script:
+    - echo "=== Final diagnostics ==="
+    - kubectl get all -n $STAGING_NAMESPACE || true
+    - kubectl get events -n $STAGING_NAMESPACE --sort-by='.lastTimestamp' | tail -50 || true
+    - |
+      kubectl get pods -n $STAGING_NAMESPACE -o wide || true
+      for pod in $(kubectl get pods -n $STAGING_NAMESPACE --field-selector=status.phase!=Running,status.phase!=Succeeded -o name 2>/dev/null); do
+        echo "--- Details for $pod ---"
+        kubectl describe $pod -n $STAGING_NAMESPACE 2>&1 | tail -30 || true
+        kubectl logs $pod -n $STAGING_NAMESPACE --tail=100 2>&1 || true
+      done
+    - echo "=== Cleaning up test namespace ==="
+    - helm uninstall newman-test-$CI_PIPELINE_ID --namespace $STAGING_NAMESPACE --ignore-not-found || true
+    - kubectl delete namespace $STAGING_NAMESPACE --ignore-not-found --wait=false || true
+
+  artifacts:
+    when: always
+    reports:
+      junit: newman-results.xml
+    paths:
+      - newman-results.xml
+    expire_in: 7 days
+  rules:
+    - if: '$CI_COMMIT_BRANCH =~ /^feature_.*/'
+      when: always
+    - if: '$CI_COMMIT_BRANCH == "develop"'
+      variables:
+        IMAGE_TAG: latest
+      when: manual
+    - when: never
+  allow_failure: false

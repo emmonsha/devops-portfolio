@@ -1,0 +1,124 @@
+# =============================================================================
+# gitlab-runner-deployment.yaml
+# ServiceAccount + ClusterRole + ClusterRoleBinding для GitLab Runner
+# =============================================================================
+
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: gitlab-runner
+  namespace: gitlab-runner
+  labels:
+    app: gitlab-runner
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: gitlab-runner
+rules:
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["*"]
+  - apiGroups: [""]
+    resources: ["pods", "pods/log", "pods/exec", "services", "configmaps", "secrets", "persistentvolumeclaims", "serviceaccounts", "endpoints", "events", "replicationcontrollers"]
+    verbs: ["*"]
+  - apiGroups: ["apps"]
+    resources: ["deployments", "statefulsets", "replicasets", "daemonsets"]
+    verbs: ["*"]
+  - apiGroups: ["batch"]
+    resources: ["jobs", "cronjobs"]
+    verbs: ["*"]
+  - apiGroups: ["autoscaling"]
+    resources: ["horizontalpodautoscalers"]
+    verbs: ["*"]
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["roles", "rolebindings"]
+    verbs: ["*"]
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["ingresses", "networkpolicies"]
+    verbs: ["*"]
+  - apiGroups: [""]
+    resources: ["persistentvolumes"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: gitlab-runner
+subjects:
+  - kind: ServiceAccount
+    name: gitlab-runner
+    namespace: gitlab-runner
+roleRef:
+  kind: ClusterRole
+  name: gitlab-runner
+  apiGroup: rbac.authorization.k8s.io
+
+# =============================================================================
+# GitLab Runner deployment
+# =============================================================================
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gitlab-runner
+  namespace: gitlab-runner
+  labels:
+    app: gitlab-runner
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: gitlab-runner
+  template:
+    metadata:
+      labels:
+        app: gitlab-runner
+    spec:
+      serviceAccountName: gitlab-runner
+      containers:
+      - name: gitlab-runner
+        image: gitlab/gitlab-runner:latest
+        command: ["/bin/sh", "-c"]
+        args:
+        - |
+          cp /config/config.toml /etc/gitlab-runner/config.toml
+          TOKEN=$(cat /etc/runner-token/runner-token)
+          sed -i "s|PLACEHOLDER_TOKEN|$TOKEN|" /etc/gitlab-runner/config.toml
+          exec gitlab-runner run
+        env:
+        - name: CI_SERVER_URL
+          value: "https://git."
+        - name: RUNNER_NAME
+          value: "kubernetes-runner"
+        - name: RUNNER_EXECUTOR
+          value: "kubernetes"
+        volumeMounts:
+        - name: runner-token
+          mountPath: /etc/runner-token
+          readOnly: true
+        - name: config-volume
+          mountPath: /config
+          readOnly: true
+        - name: runner-config
+          mountPath: /etc/gitlab-runner
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "50m"
+          limits:
+            memory: "256Mi"
+            cpu: "100m"
+      volumes:
+      - name: runner-token
+        secret:
+          secretName: gitlab-runner-auth-token
+          items:
+          - key: runner-token
+            path: runner-token
+      - name: config-volume
+        configMap:
+          name: gitlab-runner-config
+      - name: runner-config
+        emptyDir: {}

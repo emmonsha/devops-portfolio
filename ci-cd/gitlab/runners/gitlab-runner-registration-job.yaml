@@ -1,0 +1,81 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: gitlab-runner-registration-job
+  namespace: gitlab-runner
+  labels:
+    app: gitlab-runner-registration
+spec:
+  template:
+    metadata:
+      labels:
+        app: gitlab-runner-registration
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: gitlab-runner-register
+        image: gitlab/gitlab-runner:latest
+        command: ["/bin/sh", "-c"]
+        args:
+        - |
+          set -e
+          echo "=== GitLab Runner Registration Started ==="
+          
+          # Читаем токен из секрета
+          REGISTRATION_TOKEN=$(cat /etc/runner-token/token)
+          echo "✓ Registration token loaded"
+          
+          # Регистрируем runner
+          echo "Registering runner with GitLab..."
+          gitlab-runner register \
+            --non-interactive \
+            --url "https://git." \
+            --registration-token "$REGISTRATION_TOKEN" \
+            --executor "kubernetes" \
+            --name "kubernetes-runner" \
+            --kubernetes-namespace "gitlab-runner" \
+            --kubernetes-image "docker:stable" \
+            --kubernetes-privileged="true" \
+            --tag-list "kubernetes,test,production" \
+            --run-untagged="true" \
+            --locked="false" \
+            --access-level=ref_protected
+          
+          echo "✓ Registration successful!"
+          
+          # Показываем конфигурацию
+          echo ""
+          echo "=== Generated config.toml ==="
+          echo "----------------------------------------"
+          cat /etc/gitlab-runner/config.toml
+          echo "----------------------------------------"
+          
+          echo ""
+          echo "=== Registration Job Completed Successfully ==="
+        
+        volumeMounts:
+        - name: runner-token
+          mountPath: /etc/runner-token
+          readOnly: true
+        - name: runner-config
+          mountPath: /etc/gitlab-runner
+      
+      volumes:
+      - name: runner-token
+        secret:
+          secretName: runner-registration-token
+          items:
+          - key: token
+            path: token
+          defaultMode: 0400
+      
+      - name: runner-config
+        emptyDir: {}
+  
+  # Количество попыток при ошибке
+  backoffLimit: 3
+  
+  # Автоматическое удаление завершенной job через 5 минут
+  ttlSecondsAfterFinished: 300
+
+  # --tag-list "kubernetes,production" \

@@ -1,0 +1,48 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "my-helm-app.fullname" . }}-postgresql
+  labels:
+    {{- include "my-helm-app.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.postgresql.replicaCount | default 1 }}
+  selector:
+    matchLabels:
+      {{- include "my-helm-app.selectorLabels" . | nindent 6 }}
+      app: postgresql
+  template:
+    metadata:
+      labels:
+        {{- include "my-helm-app.selectorLabels" . | nindent 8 }}
+        app: postgresql
+    spec:
+      containers:
+      - name: postgresql
+        image: "{{ .Values.postgresql.image.repository }}:{{ .Values.postgresql.image.tag }}"
+        imagePullPolicy: {{ .Values.postgresql.image.pullPolicy }}
+        ports:
+        - containerPort: {{ .Values.postgresql.service.port }}
+        env:
+        - name: POSTGRES_DB
+          value: "CHANGE_ME"
+        - name: POSTGRES_USER
+          value: "CHANGE_ME"
+        - name: POSTGRES_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: {{ include "my-helm-app.fullname" . }}-postgresql-secret
+              key: password
+        volumeMounts:
+        - name: postgresql-storage
+          mountPath: /var/lib/postgresql/data
+        - name: init-sql
+          mountPath: /docker-entrypoint-initdb.d
+        resources:
+          {{- toYaml .Values.postgresql.resources | nindent 10 }}
+      volumes:
+      - name: postgresql-storage
+        persistentVolumeClaim:
+          claimName: {{ include "my-helm-app.fullname" . }}-postgresql-pvc
+      - name: init-sql
+        configMap:
+          name: {{ include "my-helm-app.fullname" . }}-init-sql

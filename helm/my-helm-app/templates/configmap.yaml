@@ -1,0 +1,65 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "my-helm-app.fullname" . }}-app-config
+  labels:
+    {{- include "my-helm-app.labels" . | nindent 4 }}
+data:
+  # Database configuration - MULTI-DATABASE SETUP
+  POSTGRES_HOST: {{ include "my-helm-app.fullname" . }}-postgresql-service
+  POSTGRES_PORT: {{ .Values.postgresql.service.port | quote }}
+
+  # Individual databases for each service
+  POSTGRES_DB_BOOKING: "booking_db"
+  POSTGRES_DB_HOTEL: "hotel_db"
+  POSTGRES_DB_SESSION: "session_db"
+  POSTGRES_DB_PAYMENT: "payment_db"
+  POSTGRES_DB_LOYALTY: "loyalty_db"
+  POSTGRES_DB_REPORT: "report_db"
+
+  # Default database (for backward compatibility)
+  db.name: "booking_db"
+  POSTGRES_DB: "booking_db"
+  POSTGRES_USER: {{ .Values.postgresql.username | quote }}
+
+  # RabbitMQ configuration - using naming expected by deployments
+  RABBIT_MQ_HOST: "{{ include "my-helm-app.fullname" . }}-rabbitmq-service"
+  RABBIT_M_Q_HOST: "{{ include "my-helm-app.fullname" . }}-rabbitmq-service"
+  RABBIT_MQ_PORT: "{{ .Values.rabbitmq.service.port }}"
+  RABBIT_M_Q_PORT: "{{ .Values.rabbitmq.service.port }}"
+  RABBIT_MQ_USER: {{ .Values.rabbitmq.username | quote }}
+  RABBIT_M_Q_USER: {{ .Values.rabbitmq.username | quote }}
+  RABBIT_MQ_PASSWORD: "CHANGE_ME"
+  RABBIT_M_Q_PASSWORD: {{ .Values.rabbitmq.password | quote }}
+  RABBIT_MQ_QUEUE_NAME: "booking_queue"
+  RABBIT_M_Q_QUEUE_NAME: "booking_queue"
+  RABBIT_MQ_EXCHANGE: "booking_exchange"
+  RABBIT_M_Q_EXCHANGE: "booking_exchange"
+
+  # Hibernate configuration
+  SPRING_JPA_HIBERNATE_DIALECT: "org.hibernate.dialect.PostgreSQL10Dialect"
+  SPRING_JPA_HIBERNATE_DDL_AUTO: "create"
+
+  # Service-specific ports
+  GATEWAY_SERVICE_PORT: "{{ .Values.gateway.service.port }}"
+  SESSION_SERVICE_PORT: "{{ .Values.session.service.port }}"
+  BOOKING_SERVICE_PORT: "{{ .Values.booking.service.port }}"
+  HOTEL_SERVICE_PORT: "{{ .Values.hotel.service.port }}"
+  PAYMENT_SERVICE_PORT: "{{ .Values.payment.service.port }}"
+  LOYALTY_SERVICE_PORT: "{{ .Values.loyalty.service.port }}"
+  REPORT_SERVICE_PORT: "{{ .Values.report.service.port }}"
+
+  # Service URLs
+  SESSION_SERVICE_HOST: "{{ include "my-helm-app.fullname" . }}-session-service"
+  HOTEL_SERVICE_HOST: "{{ include "my-helm-app.fullname" . }}-hotel-service"
+  BOOKING_SERVICE_HOST: "{{ include "my-helm-app.fullname" . }}-booking-service"
+  PAYMENT_SERVICE_HOST: "{{ include "my-helm-app.fullname" . }}-payment-service"
+  LOYALTY_SERVICE_HOST: "{{ include "my-helm-app.fullname" . }}-loyalty-service"
+  REPORT_SERVICE_HOST: "{{ include "my-helm-app.fullname" . }}-report-service"
+
+  # Authorization key
+  AUTH_KEY: {{ .Values.authKey | quote }}
+
+  # UUIDs
+  gateway-service.uuid: "b51ceda2-bfa5-11eb-8529-0242ac130003"
+  booking-service.uuid: "911ccb4c-c055-11eb-8529-0242ac130003"

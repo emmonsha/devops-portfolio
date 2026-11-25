@@ -1,0 +1,375 @@
+#export KUBECONFIG=./k3s_kubeconfig экспорт настроек кубера в хост
+#применение ansible-playbook -i hosts.ini k3s_install.yml
+
+#проверка Docker Registry:
+# Проверь что pod запущен
+# kubectl get pods -n registry
+# Проверь сервис и nodePort
+# kubectl get svc -n registry
+# Проверь что registry доступен по порту
+# curl http://192.168.56.11:31500/v2/_catalog
+# Ответ должен быть: {"repositories":[]}
+
+#проверка GitLab Runner:
+# Проверь что pod запущен
+# kubectl get pods -n gitlab-runner
+# Посмотри логи — там будет видно зарегистрировался ли runner
+# kubectl logs -n gitlab-runner -l app=gitlab-runner
+# Проверь секреты созданы
+# kubectl get secrets -n gitlab-runner
+
+---
+# --- PLAY 0: Подготовка локального окружения (Ключи) ---
+- name: Prepare Local Environment (Keys & Config)
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+
+    - name: Create directory for Ansible keys
+      file:
+        path: "~/ansible_keys"
+        state: directory
+        mode: '0700'
+
+    - name: Copy Server Key with correct permissions
+      copy:
+        src: ".vagrant/machines/server_node/virtualbox/private_key"
+        dest: "~/ansible_keys/server.key"
+        mode: '0600'
+
+    - name: Copy Agent 1 Key with correct permissions
+      copy:
+        src: ".vagrant/machines/agent_node1/virtualbox/private_key"
+        dest: "~/ansible_keys/agent1.key"
+        mode: '0600'
+
+    - name: Copy Agent 2 Key with correct permissions
+      copy:
+        src: ".vagrant/machines/agent_node2/virtualbox/private_key"
+        dest: "~/ansible_keys/agent2.key"
+        mode: '0600'
+
+    - name: Copy Agent 3 Key with correct permissions
+      copy:
+        src: ".vagrant/machines/agent_node3/virtualbox/private_key"
+        dest: "~/ansible_keys/agent3.key"
+        mode: '0600'    
+
+    - name: Copy Agent 4 Key with correct permissions
+      copy:
+        src: ".vagrant/machines/agent_node4/virtualbox/private_key"
+        dest: "~/ansible_keys/agent4.key"
+        mode: '0600'      
+
+
+# --- PLAY 1: Установка Мастера ---
+- name: Install K3s Master and Fetch Config
+  hosts: k3s_master
+  become: true
+  tasks:
+    - name: Install K3s Server
+      shell: curl -sfL https://get.k3s.io | sh -s -
+      environment:
+        INSTALL_K3S_EXEC: >-
+          server
+          --node-ip={{ master_ip }}
+          --advertise-address={{ master_ip }}
+          --tls-san={{ master_ip }}
+          --flannel-iface={{ k3s_iface }}
+          --write-kubeconfig-mode 644
+          --disable=traefik
+      args:
+        creates: /usr/local/bin/k3s
+
+    - name: Wait for node-token to be generated
+      wait_for:
+        path: /var/lib/rancher/k3s/server/node-token
+
+    - name: Read node-token
+      slurp:
+        src: /var/lib/rancher/k3s/server/node-token
+      register: node_token_base64
+
+    - name: Store token as fact
+      set_fact:
+        k3s_token: "{{ node_token_base64['content'] | b64decode | trim }}"
+
+    - name: Copy kubeconfig to local machine (Host)
+      fetch:
+        src: /etc/rancher/k3s/k3s.yaml
+        dest: ./k3s_kubeconfig
+        flat: yes
+
+    - name: Update kubeconfig server IP on local machine
+      delegate_to: localhost
+      become: false
+      replace:
+        path: ./k3s_kubeconfig
+        regexp: '127\.0\.0\.1'
+        replace: "{{ master_ip }}"
+
+# --- PLAY 2: Установка Агентов ---
+- name: Install K3s Agents
+  hosts: k3s_agents
+  become: true
+  any_errors_fatal: true
+  tasks:
+    - name: Install K3s Agent
+      shell: curl -sfL https://get.k3s.io | sh -s -
+      environment:
+        K3S_URL: "https://{{ master_ip }}:6443"
+        K3S_TOKEN: "{{ hostvars['server_node']['k3s_token'] }}"
+        INSTALL_K3S_EXEC: >-
+          agent
+          --node-ip={{ ansible_host }}
+          --flannel-iface={{ k3s_iface }}
+      args:
+        creates: /usr/local/bin/k3s
+
+
+# --- PLAY: Настройка локального registry для K3s ---
+- name: Configure insecure registry on all nodes
+  hosts: k3s_master:k3s_agents
+  become: true
+  tasks:
+    - name: Ensure /etc/rancher/k3s directory exists
+      file:
+        path: /etc/rancher/k3s
+        state: directory
+        mode: '0755'
+
+    - name: Create registries.yaml
+      copy:
+        dest: /etc/rancher/k3s/registries.yaml
+        content: |
+          mirrors:
+            "registry-docker-registry.registry.svc.cluster.local:5000":
+              endpoint:
+                - "http://{{ master_ip }}:31500"
+
+    - name: Restart K3s server
+      systemd:
+        name: k3s
+        state: restarted
+      when: inventory_hostname in groups['k3s_master']
+
+    - name: Restart K3s agent
+      systemd:
+        name: k3s-agent
+        state: restarted
+      when: inventory_hostname in groups['k3s_agents']
+
+# --- PLAY 4: Установка Аддонов (Ingress, Helm, Monitoring)  ---
+- name: Configure Cluster Addons
+  hosts: k3s_master
+  become: true
+  environment:
+    KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+  tasks:
+    # 1. Установка Helm
+    - name: Install Helm if not present
+      shell: curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+      args:
+        creates: /usr/local/bin/helm
+
+    - name: Install helm-diff plugin
+      kubernetes.core.helm_plugin:
+        plugin_path: https://github.com/databus23/helm-diff
+        state: present    
+
+    # 2. Установка Nginx Ingress Controller
+    - name: Add Ingress Nginx repo
+      kubernetes.core.helm_repository:
+        name: ingress-nginx
+        repo_url: https://kubernetes.github.io/ingress-nginx
+
+    - name: Install Nginx Ingress Controller with fixed NodePorts
+      kubernetes.core.helm:
+        name: ingress-nginx
+        chart_ref: ingress-nginx/ingress-nginx
+        release_namespace: ingress-nginx
+        create_namespace: true
+        update_repo_cache: true
+        values:
+          controller:
+            service:
+              type: NodePort
+              nodePorts:
+                http: 32665
+                https: 32098
+
+
+    # 3. Настройка репозиториев Helm
+    - name: Add Jetstack Helm repository
+      kubernetes.core.helm_repository:
+        name: jetstack
+        repo_url: https://charts.jetstack.io
+
+    # - name: Add Prometheus Community Helm repository
+    #   kubernetes.core.helm_repository:
+    #     name: prometheus-community
+    #     repo_url: https://prometheus-community.github.io/helm-charts
+
+    # # 4. Установка Cert-Manager
+    # - name: Install Cert-Manager
+    #   kubernetes.core.helm:
+    #     name: cert-manager
+    #     chart_ref: jetstack/cert-manager
+    #     release_namespace: cert-manager
+    #     create_namespace: true
+    #     chart_version: v1.19.0
+    #     update_repo_cache: true
+    #     wait: true
+    #     wait_timeout: 7m
+    #     values:
+    #       installCRDs: true
+
+    # # 5. Установка Prometheus Stack
+    # - name: Install Prometheus Operator Stack
+    #   kubernetes.core.helm:
+    #     name: kube-prometheus-stack
+    #     chart_ref: prometheus-community/kube-prometheus-stack
+    #     release_namespace: monitoring
+    #     create_namespace: true
+    #     update_repo_cache: true
+    #     values:
+    #       prometheus:
+    #         prometheusSpec:
+    #           serviceMonitorSelectorNilUsesHelmValues: false
+
+
+    #   # 1. Создаем физическую папку для хранения данных
+    # - name: Create custom storage directory
+    #   file:
+    #     path: /mnt/data/postgres
+    #     state: directory
+    #     mode: '0777'
+    #     recurse: yes
+
+    # # 2. Патчим конфиг local-path-provisioner
+    # - name: Configure K3s local-path-storage to use /mnt/data
+    #   shell: |
+    #     kubectl patch configmap local-path-config -n kube-system --type=merge -p '{"data": {"config.json": "{\n  \"nodePathMap\": [\n    {\n      \"node\": \"DEFAULT_PATH_FOR_NON_LISTED_NODES\",\n      \"paths\": [\"/mnt/data/k3s-storage\"]\n    }\n  ]\n}"}}'
+    #   ignore_errors: true
+
+
+    - name: Add twuni Helm repository
+      kubernetes.core.helm_repository:
+        name: twuni
+        repo_url: https://twuni.github.io/docker-registry.helm
+
+    - name: Install Docker Registry
+      kubernetes.core.helm:
+        name: registry
+        chart_ref: twuni/docker-registry
+        release_namespace: registry
+        create_namespace: true
+        update_repo_cache: true
+        values:
+          service:
+            type: NodePort
+            nodePort: 31500
+          persistence:
+            enabled: true
+            size: 20Gi
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 1Gi
+
+
+# --- PLAY 5: Установка GitLab Runner ---
+- name: Install GitLab Runner
+  hosts: k3s_master
+  become: true
+  environment:
+    KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+  tasks:
+
+    # 1. Читаем токен прямо из /vagrant/.env на мастер-ноде
+    - name: Read GITLAB_RUNNER_TOKEN from .env file
+      shell: "grep '^GITLAB_RUNNER_TOKEN=' /vagrant/.env | cut -d '=' -f2- | tr -d '\\n\\r '"
+      register: gitlab_token_raw
+      changed_when: false
+
+    - name: Store token as fact
+      set_fact:
+        gitlab_runner_registration_token: "{{ gitlab_token_raw.stdout }}"
+
+    - name: Fail if token is empty
+      fail:
+        msg: "GITLAB_RUNNER_TOKEN не найден в /vagrant/.env — добавь строку GITLAB_RUNNER_TOKEN=<ваш-токен>"
+      when: gitlab_runner_registration_token == ""
+
+    # 2. Создание namespace
+    - name: Create gitlab-runner namespace
+      kubernetes.core.k8s:
+        api_version: v1
+        kind: Namespace
+        name: gitlab-runner
+        state: present
+
+    # 3. Создаём секрет для пайплайна из всего .env файла (DOCKER_USER, DOCKER_PASSWORD и др.)
+    - name: Create gitlab-runner-env secret from .env file
+      shell: |
+        kubectl create secret generic gitlab-runner-env \
+          --from-env-file=/vagrant/.env \
+          --namespace=gitlab-runner \
+          --dry-run=client -o yaml | kubectl apply -f -
+      changed_when: false
+
+    # 4. Создание секрета с токеном регистрации для Helm chart
+    - name: Create GitLab Runner registration secret
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: gitlab-runner-secret
+            namespace: gitlab-runner
+          type: Opaque
+          stringData:
+            runner-registration-token: "{{ gitlab_runner_registration_token }}"
+            runner-token: ""
+
+    # 5. Копирование RBAC манифеста на мастер-ноду
+    - name: Copy rbac.yaml to master node
+      copy:
+        src: ./rbac.yaml
+        dest: /tmp/gitlab-runner-rbac.yaml
+        mode: '0644'
+
+    # 6. Применение RBAC манифеста
+    - name: Apply GitLab Runner RBAC
+      kubernetes.core.k8s:
+        state: present
+        src: /tmp/gitlab-runner-rbac.yaml
+
+    # 7. Копирование values файла на мастер-ноду
+    - name: Copy values-runner-kaniko.yaml to master node
+      copy:
+        src: ./values-runner-kaniko.yaml
+        dest: /tmp/values-runner-kaniko.yaml
+        mode: '0644'
+
+    # 8. Добавление Helm-репозитория GitLab
+    - name: Add GitLab Helm repository
+      kubernetes.core.helm_repository:
+        name: gitlab
+        repo_url: https://charts.gitlab.io
+
+    # 9. Установка GitLab Runner через Helm с values для Kaniko
+    - name: Install GitLab Runner via Helm
+      kubernetes.core.helm:
+        name: gitlab-runner
+        chart_ref: gitlab/gitlab-runner
+        release_namespace: gitlab-runner
+        create_namespace: false
+        update_repo_cache: true
+        values_files:
+          - /tmp/values-runner-kaniko.yaml

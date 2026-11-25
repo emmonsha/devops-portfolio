@@ -1,0 +1,31 @@
+# Secrets — никогда не коммитить
+*.env
+.env
+*.secret
+secrets.local.*
+!**/templates/secret-*.yaml
+!**/*secrets.yaml
+
+# Ключи и сертификаты
+*.key
+*.pem
+*.p12
+*.crt
+
+# Логи и временное
+*.log
+.DS_Store
+*.tgz
+*.tar.gz
+
+# Terraform
+*.tfstate
+*.tfstate.*
+.terraform/
+.terraform.lock.hcl
+*.tfvars
+!*.tfvars.example
+
+# IDE
+.idea/
+.vscode/

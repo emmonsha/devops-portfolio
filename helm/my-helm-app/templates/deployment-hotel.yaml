@@ -1,0 +1,99 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "my-helm-app.fullname" . }}-hotel
+  labels:
+    {{- include "my-helm-app.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.hotel.replicaCount | default 1 }}
+  selector:
+    matchLabels:
+      {{- include "my-helm-app.selectorLabels" . | nindent 6 }}
+      app: hotel
+  template:
+    metadata:
+      labels:
+        {{- include "my-helm-app.selectorLabels" . | nindent 8 }}
+        app: hotel
+    spec:
+      containers:
+      - name: hotel
+        image: "{{ .Values.hotel.image.repository }}:{{ .Values.hotel.image.tag }}"
+        imagePullPolicy: {{ .Values.hotel.image.pullPolicy }}
+        ports:
+        - containerPort: {{ .Values.hotel.service.port }}
+        env:
+        # Database configuration - using exact variable names from application.properties
+        - name: SPRING_JPA_PROPERTIES_HIBERNATE_DIALECT
+          valueFrom:
+            configMapKeyRef:
+              name: {{ include "my-helm-app.fullname" . }}-app-config
+              key: SPRING_JPA_HIBERNATE_DIALECT
+        - name: SPRING_JPA_HIBERNATE_DDL_AUTO
+          valueFrom:
+            configMapKeyRef:
+              name: {{ include "my-helm-app.fullname" . }}-app-config
+              key: SPRING_JPA_HIBERNATE_DDL_AUTO
+        - name: POSTGRES_HOST
+          valueFrom:
+            configMapKeyRef:
+              name: {{ include "my-helm-app.fullname" . }}-app-config
+              key: POSTGRES_HOST
+        - name: POSTGRES_PORT
+          valueFrom:
+            configMapKeyRef:
+              name: {{ include "my-helm-app.fullname" . }}-app-config
+              key: POSTGRES_PORT
+        - name: POSTGRES_DB
+          valueFrom:
+            configMapKeyRef:
+              name: {{ include "my-helm-app.fullname" . }}-app-config
+              key: POSTGRES_DB_HOTEL
+        - name: POSTGRES_USER
+          valueFrom:
+            configMapKeyRef:
+              name: {{ include "my-helm-app.fullname" . }}-app-config
+              key: POSTGRES_USER
+        - name: POSTGRES_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: {{ include "my-helm-app.fullname" . }}-postgresql-secret
+              key: password
+        # RabbitMQ configuration - using exact variable names from application.properties
+        - name: RABBIT_MQ_HOST
+          valueFrom:
+            configMapKeyRef:
+              name: {{ include "my-helm-app.fullname" . }}-app-config
+              key: RABBIT_M_Q_HOST
+        - name: RABBIT_MQ_PORT
+          valueFrom:
+            configMapKeyRef:
+              name: {{ include "my-helm-app.fullname" . }}-app-config
+              key: RABBIT_M_Q_PORT
+        - name: RABBIT_MQ_USER
+          valueFrom:
+            configMapKeyRef:
+              name: {{ include "my-helm-app.fullname" . }}-app-config
+              key: RABBIT_M_Q_USER
+        - name: RABBIT_MQ_PASSWORD
+          valueFrom:
+            configMapKeyRef:
+              name: {{ include "my-helm-app.fullname" . }}-app-config
+              key: RABBIT_M_Q_PASSWORD
+        - name: RABBIT_MQ_QUEUE_NAME
+          valueFrom:
+            configMapKeyRef:
+              name: {{ include "my-helm-app.fullname" . }}-app-config
+              key: RABBIT_M_Q_QUEUE_NAME
+        - name: RABBIT_MQ_EXCHANGE
+          valueFrom:
+            configMapKeyRef:
+              name: {{ include "my-helm-app.fullname" . }}-app-config
+              key: RABBIT_M_Q_EXCHANGE
+        - name: RABBIT_MQ_USERNAME
+          valueFrom:
+            configMapKeyRef:
+              name: {{ include "my-helm-app.fullname" . }}-app-config
+              key: RABBIT_M_Q_USER
+        resources:
+          {{- toYaml .Values.hotel.resources | nindent 10 }}

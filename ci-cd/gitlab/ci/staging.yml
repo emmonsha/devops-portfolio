@@ -1,0 +1,144 @@
+# =============================================================================
+# STAGING.YML - Staging Deployment
+# Триггер: git tag — запуск мануальный
+# =============================================================================
+
+staging:deploy:
+  stage: staging
+  extends:
+    - .tag-rules
+    - .kubernetes-template
+  needs:
+    - job: prepare:load-variables
+      artifacts: true
+    - job: build:gateway
+      optional: true
+    - job: build:session
+      optional: true
+    - job: build:hotel
+      optional: true
+    - job: build:booking
+      optional: true
+    - job: build:payment
+      optional: true
+    - job: build:loyalty
+      optional: true
+    - job: build:report
+      optional: true
+  variables:
+    STAGING_NAMESPACE: staging
+    HELM_RELEASE_NAME: staging-app
+  before_script:
+    - !reference [.kubernetes-template, before_script]
+  script:
+    - echo "=== Deploying to staging (tag ${CI_COMMIT_TAG}) ==="
+    - kubectl create namespace $STAGING_NAMESPACE || true
+
+    - echo "=== Creating Docker registry secret ==="
+    - kubectl create secret docker-registry regcred --docker-server=$DOCKER_REGISTRY --docker-username=$DOCKER_USERNAME --docker-password=$DOCKER_PASSWORD --namespace=$STAGING_NAMESPACE --dry-run=client -o yaml | kubectl apply -f -
+
+    - echo "=== Creating per-service app secrets ==="
+    - |
+      for SERVICE in booking-service gateway-service hotel-service loyalty-service payment-service report-service session-service; do
+        PROPS="${SERVICES_DIR}/$SERVICE/src/main/resources/application.properties"
+        if [ -f "$PROPS" ] && grep -q "^privateKey=" "$PROPS"; then
+          PRIVATE_KEY_VAL=$(awk '/^privateKey=/{val=substr($0,12); while(sub(/\\$/,"",val)){getline l; gsub(/^[ \t]+/,"",l); val=val l}; print val}' "$PROPS")
+          PUBLIC_KEY_VAL=$(awk '/^publicKey=/{val=substr($0,11); while(sub(/\\$/,"",val)){getline l; gsub(/^[ \t]+/,"",l); val=val l}; print val}' "$PROPS")
+          kubectl create secret generic "${SERVICE}-app-secrets" \
+            --namespace=$STAGING_NAMESPACE \
+            --from-literal=PRIVATE_KEY="$PRIVATE_KEY_VAL" \
+            --from-literal=PUBLIC_KEY="$PUBLIC_KEY_VAL" \
+            --dry-run=client -o yaml | kubectl apply -f -
+          echo "Created secrets for $SERVICE"
+        else
+          echo "No RSA keys found for $SERVICE — skipping"
+        fi
+      done
+
+    - echo "=== Deploying via Helm ==="
+    - |
+      helm upgrade --install staging-app ${CI_PROJECT_DIR}/${HELM_CHART_PATH} \
+        --namespace $STAGING_NAMESPACE \
+        --set global.imagePullSecrets[0].name=regcred \
+        --set rabbitmq.image.repository=rabbitmq \
+        --set rabbitmq.image.tag=3-management \
+        --set postgresql.persistence.enabled=false \
+        --set serviceAccount.create=false \
+        --wait --timeout 10m --atomic
+
+    - echo "=== Waiting for pods ==="
+    - kubectl wait --for=condition=ready pod --all -n $STAGING_NAMESPACE --timeout=300s
+
+    - echo "=== Deployment Information ==="
+    - kubectl get pods -n $STAGING_NAMESPACE
+    - kubectl get services -n $STAGING_NAMESPACE
+
+  environment:
+    name: staging
+    url: http://staging.example.com
+  when: manual
+  allow_failure: false
+
+# ============================================
+# ROLLBACK
+# ============================================
+
+staging:rollback:
+  stage: staging
+  extends:
+    - .tag-rules
+    - .kubernetes-template
+  needs:
+    - job: staging:deploy
+  variables:
+    STAGING_NAMESPACE: staging
+    HELM_RELEASE_NAME: staging-app
+  before_script:
+    - !reference [.kubernetes-template, before_script]
+  script:
+    - echo "=== Rolling back staging deployment ==="
+    - helm history $HELM_RELEASE_NAME -n $STAGING_NAMESPACE
+    - |
+      CURRENT=$(helm history $HELM_RELEASE_NAME -n $STAGING_NAMESPACE --max 1 -o json | grep -o '"revision":[0-9]*' | grep -o '[0-9]*' | head -1)
+      echo "Current revision: $CURRENT"
+      if [ "$CURRENT" -le 1 ]; then
+        echo "ERROR - No previous revision to rollback to (current is revision $CURRENT)"
+        exit 1
+      fi
+      PREV=$((CURRENT - 1))
+      echo "Rolling back to revision $PREV..."
+      helm rollback $HELM_RELEASE_NAME $PREV -n $STAGING_NAMESPACE
+    - echo "Rollback completed"
+    - kubectl get pods -n $STAGING_NAMESPACE
+  environment:
+    name: staging
+  when: manual
+  allow_failure: true
+
+# ============================================
+# CLEANUP
+# ============================================
+
+staging:cleanup:
+  stage: staging
+  extends:
+    - .tag-rules
+    - .kubernetes-template
+  needs:
+    - job: staging:deploy
+  variables:
+    STAGING_NAMESPACE: staging
+    HELM_RELEASE_NAME: staging-app
+    GIT_STRATEGY: none
+  before_script:
+    - !reference [.kubernetes-template, before_script]
+  script:
+    - echo "=== Cleaning up staging environment ==="
+    - helm uninstall $HELM_RELEASE_NAME --namespace $STAGING_NAMESPACE --ignore-not-found=true
+    - kubectl delete namespace $STAGING_NAMESPACE --ignore-not-found=true
+    - echo "Cleanup completed"
+  environment:
+    name: staging
+    action: stop
+  when: manual
+  allow_failure: true

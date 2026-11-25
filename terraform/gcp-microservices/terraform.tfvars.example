@@ -1,0 +1,4 @@
+# Скопируйте в terraform.tfvars и заполните своими значениями.
+# terraform.tfvars в .gitignore — секреты не коммитятся.
+project_id = "your-gcp-project-id"
+region     = "europe-west4"

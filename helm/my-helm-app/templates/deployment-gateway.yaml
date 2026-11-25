@@ -1,0 +1,97 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "my-helm-app.fullname" . }}-gateway
+  labels:
+    {{- include "my-helm-app.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.gateway.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "my-helm-app.selectorLabels" . | nindent 6 }}
+      app: gateway
+  template:
+    metadata:
+      labels:
+        {{- include "my-helm-app.selectorLabels" . | nindent 8 }}
+        app: gateway
+    spec:
+      containers:
+      - name: gateway
+        image: "{{ .Values.gateway.image.repository }}:{{ .Values.gateway.image.tag }}"
+        imagePullPolicy: {{ .Values.gateway.image.pullPolicy }}
+        ports:
+        - containerPort: {{ .Values.gateway.service.port }}
+        env:
+        # Service-to-service communication - using exact variable names from application.properties
+        - name: SESSION_SERVICE_HOST
+          valueFrom:
+            configMapKeyRef:
+              name: {{ include "my-helm-app.fullname" . }}-app-config
+              key: SESSION_SERVICE_HOST
+        - name: SESSION_SERVICE_PORT
+          valueFrom:
+            configMapKeyRef:
+              name: {{ include "my-helm-app.fullname" . }}-app-config
+              key: SESSION_SERVICE_PORT
+        - name: HOTEL_SERVICE_HOST
+          valueFrom:
+            configMapKeyRef:
+              name: {{ include "my-helm-app.fullname" . }}-app-config
+              key: HOTEL_SERVICE_HOST
+        - name: HOTEL_SERVICE_PORT
+          valueFrom:
+            configMapKeyRef:
+              name: {{ include "my-helm-app.fullname" . }}-app-config
+              key: HOTEL_SERVICE_PORT
+        - name: BOOKING_SERVICE_HOST
+          valueFrom:
+            configMapKeyRef:
+              name: {{ include "my-helm-app.fullname" . }}-app-config
+              key: BOOKING_SERVICE_HOST
+        - name: BOOKING_SERVICE_PORT
+          valueFrom:
+            configMapKeyRef:
+              name: {{ include "my-helm-app.fullname" . }}-app-config
+              key: BOOKING_SERVICE_PORT
+        - name: PAYMENT_SERVICE_HOST
+          valueFrom:
+            configMapKeyRef:
+              name: {{ include "my-helm-app.fullname" . }}-app-config
+              key: PAYMENT_SERVICE_HOST
+        - name: PAYMENT_SERVICE_PORT
+          valueFrom:
+            configMapKeyRef:
+              name: {{ include "my-helm-app.fullname" . }}-app-config
+              key: PAYMENT_SERVICE_PORT
+        - name: LOYALTY_SERVICE_HOST
+          valueFrom:
+            configMapKeyRef:
+              name: {{ include "my-helm-app.fullname" . }}-app-config
+              key: LOYALTY_SERVICE_HOST
+        - name: LOYALTY_SERVICE_PORT
+          valueFrom:
+            configMapKeyRef:
+              name: {{ include "my-helm-app.fullname" . }}-app-config
+              key: LOYALTY_SERVICE_PORT
+        - name: REPORT_SERVICE_HOST
+          valueFrom:
+            configMapKeyRef:
+              name: {{ include "my-helm-app.fullname" . }}-app-config
+              key: REPORT_SERVICE_HOST
+        - name: REPORT_SERVICE_PORT
+          valueFrom:
+            configMapKeyRef:
+              name: {{ include "my-helm-app.fullname" . }}-app-config
+              key: REPORT_SERVICE_PORT
+        # Authentication configuration - using keys from app-secrets in Kustomize
+        - name: AUTHORIZATION_KEY
+          value: {{ .Values.authKey | quote }}
+        - name: BEARER_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: {{ include "my-helm-app.fullname" . }}-auth-secret
+              key: auth-key
+        resources:
+          {{- toYaml .Values.gateway.resources | nindent 10 }}
+

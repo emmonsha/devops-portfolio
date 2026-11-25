@@ -1,0 +1,65 @@
+# =============================================================================
+# .GITLAB-CI.YML - Main Pipeline Configuration
+# =============================================================================
+# Модульная структура CI/CD пайплайна
+# Базовые структурные переменные определены здесь
+# =============================================================================
+
+# Базовые переменные (структура проекта) нужны на этапе парсинга GitLab CI
+variables:
+  # Пути к директориям
+  SERVICES_DIR: "src/services"
+  HELM_DIR: "src/helm"
+  TESTS_DIR: "src/tests"
+  HELM_CHART_PATH: "src/helm/my-helm-app"
+  
+  # Helm конфигурация
+  HELM_RELEASE_NAME: "my-helm-app"
+  
+  # Docker конфигурация
+  DOCKER_REGISTRY: "docker.io"
+  DOCKER_DRIVER: overlay2
+  DOCKER_TLS_CERTDIR: "/certs"
+  DOCKER_HOST: tcp://docker:2376
+  DOCKER_TLS_VERIFY: 1
+  DOCKER_CERT_PATH: "$DOCKER_TLS_CERTDIR/client"
+  
+  # GitLab Runner
+  FF_NETWORK_PER_BUILD: 1
+  FF_USE_LEGACY_KUBERNETES_EXECUTION_STRATEGY: 0
+
+# Импорт всех модулей
+include:
+  - local: 'src/gitlab/ci/templates.yml'    # Базовые шаблоны и rules
+  - local: 'src/gitlab/ci/prepare.yml'      # Prepare stage (загрузка .env)
+  - local: 'src/gitlab/ci/build.yml'        # Build stage
+  - local: 'src/gitlab/ci/test.yml'         # Test stage
+  - local: 'src/gitlab/ci/staging.yml'      # Staging deployment
+
+# Определение стадий пайплайна
+stages:
+  - prepare   # Загрузка переменных из src/.env, валидация
+  - build     # Сборка Docker образов
+  - test      # Unit и integration тесты
+  - staging   # Развёртывание в staging
+
+# =============================================================================
+# WORKFLOW RULES - Когда запускать pipeline
+# =============================================================================
+
+workflow:
+  rules:
+    # Запускать для feature веток
+    - if: '$CI_COMMIT_BRANCH =~ /^feature_.*/'
+      when: always
+    
+    # Запускать для тегов
+    - if: '$CI_COMMIT_TAG'
+      when: always
+    
+    # Запускать для develop ветки
+    - if: '$CI_COMMIT_BRANCH == "develop"'
+      when: always
+    
+    # Не запускать для остальных
+    - when: never

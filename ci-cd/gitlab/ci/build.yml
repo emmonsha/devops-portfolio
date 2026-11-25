@@ -1,0 +1,180 @@
+# =============================================================================
+# BUILD.YML - Build Stage (Kaniko)
+# =============================================================================
+
+.build-service:
+  stage: build
+  needs:
+    - job: prepare:load-variables
+      artifacts: true
+  image:
+    name: gcr.io/kaniko-project/executor:debug
+    entrypoint: [""]
+  script:
+    - mkdir -p /kaniko/.docker
+    - echo "Creating Docker config for ${DOCKER_USERNAME}"
+    - |
+      cat > /kaniko/.docker/config.json <<EOF
+      {
+        "auths": {
+          "https://index.docker.io/v1/": {
+            "auth": "$(printf '%s:%s' "${DOCKER_USERNAME}" "${DOCKER_PASSWORD}" | base64 | tr -d '\n')"
+          }
+        }
+      }
+      EOF
+    - echo "Building ${SERVICE_NAME}"
+    - echo "Pushing to ${DOCKER_REPOSITORY}/${SERVICE_NAME}"
+    - cd ${SERVICES_DIR}/${SERVICE_NAME}
+    - test -f Dockerfile || exit 1
+    - | 
+      /kaniko/executor \
+        --context "${CI_PROJECT_DIR}/${SERVICES_DIR}/${SERVICE_NAME}" \
+        --dockerfile "${CI_PROJECT_DIR}/${SERVICES_DIR}/${SERVICE_NAME}/Dockerfile" \
+        --destination "${DOCKER_REPOSITORY}/${SERVICE_NAME}:${CI_COMMIT_SHORT_SHA}" \
+        --destination "${DOCKER_REPOSITORY}/${SERVICE_NAME}:latest"\
+        --compressed-caching=false \
+        ${KANIKO_ARGS}
+  rules:
+    - if: '$CI_COMMIT_BRANCH =~ /^feature_.*/'
+      when: always
+    - if: '$CI_COMMIT_BRANCH == "develop"'
+      changes:
+        - src/services/${SERVICE_NAME}/**/*
+        - src/helm/**/*
+      when: always
+    - when: never
+
+build:gateway:
+  extends: .build-service
+  variables:
+    SERVICE_NAME: gateway-service
+  rules:
+    - if: '$CI_COMMIT_BRANCH =~ /^feature_.*/'
+      changes:
+        - src/services/gateway-service/**/*
+      when: always
+    - if: '$CI_COMMIT_BRANCH == "develop"'
+      changes:
+        - src/services/gateway-service/**/*
+      when: always
+    - when: never
+
+build:session:
+  extends: .build-service
+  variables:
+    SERVICE_NAME: session-service
+  rules:
+    - if: '$CI_COMMIT_BRANCH =~ /^feature_.*/'
+      changes:
+        - src/services/session-service/**/*
+      when: always
+    - if: '$CI_COMMIT_BRANCH == "develop"'
+      changes:
+        - src/services/session-service/**/*
+      when: always
+    - when: never
+
+build:booking:
+  extends: .build-service
+  variables:
+    SERVICE_NAME: booking-service
+  rules:
+    - if: '$CI_COMMIT_BRANCH =~ /^feature_.*/'
+      changes:
+        - src/services/booking-service/**/*
+      when: always
+    - if: '$CI_COMMIT_BRANCH == "develop"'
+      changes:
+        - src/services/booking-service/**/*
+      when: always
+    - when: never
+
+build:hotel:
+  extends: .build-service
+  variables:
+    SERVICE_NAME: hotel-service
+  rules:
+    - if: '$CI_COMMIT_BRANCH =~ /^feature_.*/'
+      changes:
+        - src/services/hotel-service/**/*
+      when: always
+    - if: '$CI_COMMIT_BRANCH == "develop"'
+      changes:
+        - src/services/hotel-service/**/*
+      when: always
+    - when: never
+
+build:loyalty:
+  extends: .build-service
+  variables:
+    SERVICE_NAME: loyalty-service
+  rules:
+    - if: '$CI_COMMIT_BRANCH =~ /^feature_.*/'
+      changes:
+        - src/services/loyalty-service/**/*
+      when: always
+    - if: '$CI_COMMIT_BRANCH == "develop"'
+      changes:
+        - src/services/loyalty-service/**/*
+      when: always
+    - when: never
+
+build:payment:
+  extends: .build-service
+  variables:
+    SERVICE_NAME: payment-service
+  rules:
+    - if: '$CI_COMMIT_BRANCH =~ /^feature_.*/'
+      changes:
+        - src/services/payment-service/**/*
+      when: always
+    - if: '$CI_COMMIT_BRANCH == "develop"'
+      changes:
+        - src/services/payment-service/**/*
+      when: always
+    - when: never
+
+build:report:
+  extends: .build-service
+  variables:
+    SERVICE_NAME: report-service
+    KANIKO_ARGS: "--cache=false"
+  rules:
+    - if: '$CI_COMMIT_BRANCH =~ /^feature_.*/'
+      changes:
+        - src/services/report-service/**/*
+      when: always
+    - if: '$CI_COMMIT_BRANCH == "develop"'
+      changes:
+        - src/services/report-service/**/*
+      when: always
+    - when: never
+
+build:summary:
+  stage: build
+  image: alpine:latest
+  needs:
+    - job: build:gateway
+      optional: true
+    - job: build:session
+      optional: true
+    - job: build:booking
+      optional: true
+    - job: build:hotel
+      optional: true
+    - job: build:loyalty
+      optional: true
+    - job: build:payment
+      optional: true
+    - job: build:report
+      optional: true
+  script:
+    - echo "Build complete for ${CI_COMMIT_SHORT_SHA}"
+  rules:
+    - if: '$CI_COMMIT_BRANCH =~ /^feature_.*/'
+      when: always
+    - if: '$CI_COMMIT_BRANCH == "develop"'
+      when: always
+    - when: never
+  allow_failure: true
